@@ -31,11 +31,6 @@ class ChatHistory:
             'timestamp': self.timestamp.isoformat()
         }
 
-# Add a basic route for the root URL
-@app.route('/')
-def home():
-    return "Server is running"
-
 @app.route('/api/chat', methods=['POST'])
 def chat():
     try:
@@ -49,6 +44,7 @@ def chat():
         if not message:
             return jsonify({'error': 'Message is required'}), 400
 
+        # Get chat history or create new one
         if chat_id not in chat_histories:
             chat_histories[chat_id] = ChatHistory(
                 id=chat_id,
@@ -56,25 +52,30 @@ def chat():
                 timestamp=datetime.now()
             )
 
+        # Add user message to history
         chat_histories[chat_id].messages.append({
             'role': 'user',
             'content': message
         })
 
+        # Prepare messages for OpenAI API
         messages = [
             {'role': 'system', 'content': 'You are a helpful tutor assistant.'}
         ] + chat_histories[chat_id].messages
 
         try:
+            # Get response from OpenAI using the new client
             response = client.chat.completions.create(
-                model="gpt-4",  # Changed from gpt-4o to gpt-4
+                model="gpt-4o",
                 messages=messages,
                 max_tokens=1000,
                 temperature=0.7
             )
 
+            # Extract assistant's response
             assistant_message = response.choices[0].message.content
 
+            # Add assistant's response to history
             chat_histories[chat_id].messages.append({
                 'role': 'assistant',
                 'content': assistant_message
@@ -128,10 +129,12 @@ def upload_file():
         if file.filename == '':
             return jsonify({'error': 'No selected file'}), 400
 
+        # Create uploads directory if it doesn't exist
         upload_dir = os.path.join(os.path.dirname(__file__), 'uploads')
         if not os.path.exists(upload_dir):
             os.makedirs(upload_dir)
 
+        # Save file
         filename = str(uuid.uuid4()) + '_' + file.filename
         file_path = os.path.join(upload_dir, filename)
         file.save(file_path)
@@ -153,7 +156,5 @@ def after_request(response):
     return response
 
 if __name__ == '__main__':
-    # Get port from environment variable or default to 10000
-    port = int(os.environ.get('PORT', 10000))
-    # Run the app on 0.0.0.0 (all available network interfaces)
+    port = int(os.environ.get('PORT', 8000))
     app.run(host='0.0.0.0', port=port)
