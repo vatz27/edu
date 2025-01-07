@@ -66,7 +66,7 @@ def chat():
         try:
             # Get response from OpenAI using the new client
             response = client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-3.5-turbo",
                 messages=messages,
                 max_tokens=1000,
                 temperature=0.7
@@ -156,5 +156,4 @@ def after_request(response):
     return response
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(debug=True, port=5000)
