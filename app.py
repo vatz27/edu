@@ -122,6 +122,17 @@ def preload_questions(topic: str):
     if questions:
         question_cache.extend(questions)
 
+@app.route('/', methods=['GET'])
+def index():
+    return jsonify({
+        "status": "ok",
+        "message": "Quiz API is running",
+        "endpoints": {
+            "health": "/health",
+            "quiz": "/quiz/next?topic={topic}&current_index={index}"
+        }
+    }), 200
+
 @app.route('/quiz/next', methods=['GET'])
 def get_next_questions():
     try:
@@ -159,4 +170,4 @@ def health_check():
     return jsonify({"status": "healthy"}), 200
 
 if __name__ == '__main__':
-    app.run(debug=False, port=5000, host='0.0.0.0')
+    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 10000)))
