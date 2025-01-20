@@ -1,159 +1,168 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import openai
-import os
-from datetime import datetime
-import uuid
-import json
 from openai import OpenAI
+from dotenv import load_dotenv
+from pydantic import BaseModel
+from typing import List, Optional, Set
+import os
+import random
+import json
+from urllib.parse import unquote
+from threading import Thread
 
 app = Flask(__name__)
 CORS(app)
+load_dotenv()
 
-# Configure OpenAI client
-client = OpenAI(
-    api_key='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'
-)
+api_key = os.getenv('OPENAI_API_KEY')
+client = OpenAI(api_key=api_key)
 
-# In-memory storage for chat histories
-chat_histories = {}
+# Pydantic models
+class QuizQuestion(BaseModel):
+    question: str
+    options: List[str]
+    answer: str
+    explanation: str
 
-class ChatHistory:
-    def __init__(self, id, messages, timestamp):
-        self.id = id
-        self.messages = messages
-        self.timestamp = timestamp
+class QuizResponse(BaseModel):
+    questions: List[QuizQuestion]
+    should_fetch: bool
 
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'messages': self.messages,
-            'timestamp': self.timestamp.isoformat()
-        }
+# Global question cache and used questions tracking
+question_cache: List[QuizQuestion] = []
+used_questions: Set[str] = set()  # Store used question texts
+current_topic: str = ""
 
-@app.route('/api/chat', methods=['POST'])
-def chat():
+def generate_quiz_questions(topic: str, num_questions: int = 5) -> Optional[List[QuizQuestion]]:
+    system_prompt = f"""
+    You must respond with a valid JSON object. Generate {num_questions} multiple-choice questions about {topic}.
+    The response should be a JSON object with the following structure:
+    {{
+        "questions": [
+            {{
+                "question": "Question text",
+                "options": ["Option 1", "Option 2", "Option 3", "Option 4"],
+                "answer": "Correct option text",
+                "explanation": "Brief explanation"
+            }}
+        ]
+    }}
+    """
+
+    user_prompt = f"""
+    Please generate {num_questions} multiple choice questions about {topic} in JSON format.
+    Each question must have exactly 4 options, and the answer must exactly match one of the options.
+    Make sure each question is unique and not previously asked.
+    """
+
     try:
-        data = request.get_json()
-        if not data:
-            return jsonify({'error': 'No JSON data received'}), 400
-            
-        message = data.get('message')
-        chat_id = data.get('chat_id', str(uuid.uuid4()))
-
-        if not message:
-            return jsonify({'error': 'Message is required'}), 400
-
-        # Get chat history or create new one
-        if chat_id not in chat_histories:
-            chat_histories[chat_id] = ChatHistory(
-                id=chat_id,
-                messages=[],
-                timestamp=datetime.now()
-            )
-
-        # Add user message to history
-        chat_histories[chat_id].messages.append({
-            'role': 'user',
-            'content': message
-        })
-
-        # Prepare messages for OpenAI API
-        messages = [
-            {'role': 'system', 'content': 'You are a helpful tutor assistant.'}
-        ] + chat_histories[chat_id].messages
-
-        try:
-            # Get response from OpenAI using the new client
-            response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=messages,
-                max_tokens=1000,
-                temperature=0.7
-            )
-
-            # Extract assistant's response
-            assistant_message = response.choices[0].message.content
-
-            # Add assistant's response to history
-            chat_histories[chat_id].messages.append({
-                'role': 'assistant',
-                'content': assistant_message
-            })
-
-            return jsonify({
-                'response': assistant_message,
-                'chat_id': chat_id
-            })
-
-        except Exception as api_error:
-            print(f"OpenAI API Error: {str(api_error)}")
-            return jsonify({
-                'error': f"OpenAI API Error: {str(api_error)}"
-            }), 500
-
-    except Exception as e:
-        print(f"Server Error: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/history', methods=['GET'])
-def get_history():
-    try:
-        histories = [history.to_dict() for history in chat_histories.values()]
-        return jsonify(histories)
-    except Exception as e:
-        print(f"Error getting history: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/new-chat', methods=['POST'])
-def new_chat():
-    try:
-        chat_id = str(uuid.uuid4())
-        chat_histories[chat_id] = ChatHistory(
-            id=chat_id,
-            messages=[],
-            timestamp=datetime.now()
+        completion = client.chat.completions.create(
+            model="gpt-4-turbo-preview",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=1.0,
+            response_format={"type": "json_object"}
         )
-        return jsonify({'chat_id': chat_id})
+
+        response_text = completion.choices[0].message.content
+        
+        try:
+            response_data = json.loads(response_text)
+            if "questions" not in response_data:
+                return None
+
+            processed_questions = []
+            for q in response_data["questions"]:
+                if not all(k in q for k in ["question", "options", "answer", "explanation"]):
+                    continue
+                
+                if len(q["options"]) != 4:
+                    continue
+
+                # Check if question is repeated
+                if q["question"] in used_questions:
+                    print(f"Duplicate question detected: {q['question']}")
+                    continue
+
+                question = QuizQuestion(
+                    question=q["question"],
+                    options=q["options"].copy(),
+                    answer=q["answer"],
+                    explanation=q["explanation"]
+                )
+
+                if question.answer not in question.options:
+                    continue
+
+                # Print question for monitoring
+                print(f"Generated question: {question.question}")
+                
+                random.shuffle(question.options)
+                used_questions.add(question.question)  # Add to used questions set
+                processed_questions.append(question)
+
+            return processed_questions
+
+        except json.JSONDecodeError as e:
+            print(f"JSON parsing error: {e}")
+            return None
+
     except Exception as e:
-        print(f"Error creating new chat: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        print(f"Error in generate_quiz_questions: {str(e)}")
+        return None
 
-@app.route('/api/upload', methods=['POST'])
-def upload_file():
+def preload_questions(topic: str):
+    """Generate questions in background and store in cache"""
+    global question_cache, current_topic, used_questions
+    if topic != current_topic:
+        question_cache.clear()
+        used_questions.clear()  # Clear used questions when topic changes
+        current_topic = topic
+    
+    questions = generate_quiz_questions(topic, 5)
+    if questions:
+        question_cache.extend(questions)
+
+@app.route('/quiz/next', methods=['GET'])
+def get_next_questions():
     try:
-        if 'file' not in request.files:
-            return jsonify({'error': 'No file part'}), 400
+        topic = unquote(request.args.get('topic', ''))
+        current_index = int(request.args.get('current_index', 0))
+        
+        if not topic:
+            return jsonify({"error": "Missing topic parameter"}), 400
 
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({'error': 'No selected file'}), 400
+        topic = topic.strip()
+        
+        # If we're at index 2 or cache is low, preload next set
+        if current_index % 5 == 2 or len(question_cache) < 5:
+            Thread(target=preload_questions, args=(topic,)).start()
 
-        # Create uploads directory if it doesn't exist
-        upload_dir = os.path.join(os.path.dirname(__file__), 'uploads')
-        if not os.path.exists(upload_dir):
-            os.makedirs(upload_dir)
-
-        # Save file
-        filename = str(uuid.uuid4()) + '_' + file.filename
-        file_path = os.path.join(upload_dir, filename)
-        file.save(file_path)
+        # If cache is empty, generate initial questions
+        if len(question_cache) < 5:
+            questions = generate_quiz_questions(topic, 5)
+            if questions is None:
+                return jsonify({"error": "Failed to generate questions"}), 500
+        else:
+            questions = question_cache[:5]
+            del question_cache[:5]
 
         return jsonify({
-            'success': True,
-            'file_path': file_path,
-            'filename': filename
+            "questions": [q.model_dump() for q in questions],  # Updated from dict() to model_dump()
+            "should_fetch": True
         })
 
+    except ValueError as ve:
+        return jsonify({"error": str(ve)}), 400
     except Exception as e:
-        print(f"Error uploading file: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
-@app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-    return response
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({"status": "healthy"}), 200
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    CORS(app, resources={r"/*": {"origins": "*"}})
+    app.run(debug=True, port=5000, host='0.0.0.0')
