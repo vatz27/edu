@@ -30,7 +30,7 @@ class QuizResponse(BaseModel):
 
 # Global question cache and used questions tracking
 question_cache: List[QuizQuestion] = []
-used_questions: Set[str] = set()  # Store used question texts
+used_questions: Set[str] = set()
 current_topic: str = ""
 
 def generate_quiz_questions(topic: str, num_questions: int = 5) -> Optional[List[QuizQuestion]]:
@@ -81,7 +81,6 @@ def generate_quiz_questions(topic: str, num_questions: int = 5) -> Optional[List
                 if len(q["options"]) != 4:
                     continue
 
-                # Check if question is repeated
                 if q["question"] in used_questions:
                     print(f"Duplicate question detected: {q['question']}")
                     continue
@@ -96,11 +95,10 @@ def generate_quiz_questions(topic: str, num_questions: int = 5) -> Optional[List
                 if question.answer not in question.options:
                     continue
 
-                # Print question for monitoring
                 print(f"Generated question: {question.question}")
                 
                 random.shuffle(question.options)
-                used_questions.add(question.question)  # Add to used questions set
+                used_questions.add(question.question)
                 processed_questions.append(question)
 
             return processed_questions
@@ -114,11 +112,10 @@ def generate_quiz_questions(topic: str, num_questions: int = 5) -> Optional[List
         return None
 
 def preload_questions(topic: str):
-    """Generate questions in background and store in cache"""
     global question_cache, current_topic, used_questions
     if topic != current_topic:
         question_cache.clear()
-        used_questions.clear()  # Clear used questions when topic changes
+        used_questions.clear()
         current_topic = topic
     
     questions = generate_quiz_questions(topic, 5)
@@ -136,11 +133,9 @@ def get_next_questions():
 
         topic = topic.strip()
         
-        # If we're at index 2 or cache is low, preload next set
         if current_index % 5 == 2 or len(question_cache) < 5:
             Thread(target=preload_questions, args=(topic,)).start()
 
-        # If cache is empty, generate initial questions
         if len(question_cache) < 5:
             questions = generate_quiz_questions(topic, 5)
             if questions is None:
@@ -150,7 +145,7 @@ def get_next_questions():
             del question_cache[:5]
 
         return jsonify({
-            "questions": [q.model_dump() for q in questions],  # Updated from dict() to model_dump()
+            "questions": [q.model_dump() for q in questions],
             "should_fetch": True
         })
 
@@ -164,5 +159,4 @@ def health_check():
     return jsonify({"status": "healthy"}), 200
 
 if __name__ == '__main__':
-    CORS(app, resources={r"/*": {"origins": "*"}})
-    app.run(debug=True, port=5000, host='0.0.0.0')
+    app.run(debug=False, port=5000, host='0.0.0.0')
